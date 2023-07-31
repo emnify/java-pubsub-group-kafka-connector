@@ -28,7 +28,7 @@ spec:
   serviceAccountName: jenkins-codeartifact
   containers:
   - name: maven
-    image: maven:3.8.7-openjdk-17
+    image: maven:3.8.7-openjdk-18
     command:
     - cat
     tty: true
