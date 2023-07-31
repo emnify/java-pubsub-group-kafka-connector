@@ -27,6 +27,7 @@ import com.google.api.gax.core.FixedExecutorProvider;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.cloud.pubsub.v1.Publisher;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.google.protobuf.ByteString;
 import com.google.pubsub.kafka.common.ConnectorCredentialsProvider;
 import com.google.pubsub.kafka.common.ConnectorUtils;
@@ -40,6 +41,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -85,6 +87,7 @@ public class CloudPubSubSinkTask extends SinkTask {
   private long compressionBytesThreshold;
   private ConnectorCredentialsProvider gcpCredentialsProvider;
   private com.google.cloud.pubsub.v1.Publisher publisher;
+  private boolean shouldValidateConfiguration;
 
   /** Holds a list of the publishing futures that have not been processed for a single partition. */
   private class OutstandingFuturesForPartition {
@@ -141,6 +144,7 @@ public class CloudPubSubSinkTask extends SinkTask {
     compressionBytesThreshold =
         (Long) validatedProps.get(CloudPubSubSinkConnector.COMPRESSION_BYTES_THRESHOLD);
     gcpCredentialsProvider = ConnectorCredentialsProvider.fromConfig(validatedProps);
+    shouldValidateConfiguration = true;
     if (publisher == null) {
       // Only do this if we did not use the constructor.
       createPublisher();
@@ -349,6 +353,7 @@ public class CloudPubSubSinkTask extends SinkTask {
       try {
         ApiFutures.allAsList(outstandingFutures.futures).get();
       } catch (Exception e) {
+        shouldValidateConfiguration = true;
         throw new RuntimeException(e);
       } finally {
         outstandingFutures.futures.clear();
@@ -359,7 +364,23 @@ public class CloudPubSubSinkTask extends SinkTask {
 
   /** Publish all the messages in a partition and store the Future's for each publish request. */
   private void publishMessage(String topic, Integer partition, PubsubMessage message) {
-    addPendingMessageFuture(topic, partition, publisher.publish(message));
+    if (shouldValidateConfiguration) {
+      ApiFuture<String> publishResult = publisher.publish(message);
+      awaitOneMessage(publishResult);
+    } else {
+      addPendingMessageFuture(topic, partition, publisher.publish(message));
+    }
+  }
+
+  private void awaitOneMessage(ApiFuture<String> publishResult) {
+    CountDownLatch atLeastOneWritten = new CountDownLatch(1);
+    publishResult.addListener(() -> atLeastOneWritten.countDown(), MoreExecutors.directExecutor());
+    try {
+      atLeastOneWritten.await(this.maxRequestTimeoutMs, TimeUnit.MILLISECONDS);
+      shouldValidateConfiguration = false;
+    } catch (InterruptedException ex) {
+      throw new RuntimeException("Message publishing interrupted", ex);
+    }
   }
 
   private void addPendingMessageFuture(String topic, Integer partition, ApiFuture<String> future) {
