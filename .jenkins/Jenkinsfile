@@ -61,13 +61,13 @@ spec:
     }
     stage('Build and test') {
       steps {
-        sh 'mvn test -q -B -s ../settings.xml'
+        sh 'mvn test -q -B -s settings.xml'
       }
     }
     stage('Deploy') {
       when { branch 'master' }
       steps {
-        sh 'mvn deploy -q -B -s ../settings.xml -DskipTests=true'
+        sh 'mvn deploy -q -B -s settings.xml -DskipTests=true'
       }
     }
   }
